@@ -540,6 +540,51 @@ app.post("/api/sessions/:sessionId/secrets", verifyUserSession, async (req, res)
   }
 });
 
+/**
+ * GET /api/sessions/:sessionId/remainingsecrets
+ * Frontend polls this to get the count of remaining pending secrets
+ * Supports both user JWT and pipeline Bearer token
+ */
+app.get("/api/sessions/:sessionId/remainingsecrets", (req, res, next) => {
+  // Check if it's a pipeline request (Bearer token)
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    return verifyPipelineToken(req, res, next);
+  }
+  // Otherwise, verify as user session
+  return verifyUserSession(req, res, next);
+}, async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const user = req.user;
+    
+    console.log(`[SESSIONS] Checking remaining secrets for session: ${sessionId}`);
+    if (user) console.log(`[SESSIONS] User: ${user.login}`);
+    
+    const session = getSession(sessionId);
+    
+    if (!session) {
+      console.log(`[SESSIONS] ❌ Session ${sessionId} not found`);
+      return res.status(404).json({ error: 'Session not found' });
+    }
+    
+    const remainingCount = session.secrets.pending.length;
+    
+    console.log(`[SESSIONS] ✅ Session ${sessionId} has ${remainingCount} pending secrets`);
+    
+    res.json({
+      sessionId: session.sessionId,
+      remainingSecrets: remainingCount,
+      totalSecrets: (session.secrets.completed.length + session.secrets.pending.length),
+      completedSecrets: session.secrets.completed.length,
+      pendingSecrets: session.secrets.pending,
+      status: session.metadata.status
+    });
+  } catch (err) {
+    console.error("[SESSIONS] ❌ Failed to get remaining secrets count:", err);
+    res.status(500).json({ error: 'Failed to get remaining secrets', message: err.message });
+  }
+});
 
 // ============================================
 // ADMIN/DEBUG ENDPOINTS
