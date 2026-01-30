@@ -1,0 +1,12 @@
+{
+    "key1": "TBC",
+    "key2": "TBD",
+    "key3": "xyz",
+    "key4": "abc",
+    "key_status": {
+        "key1": "open",
+        "key2": "open",
+        "key3": "updated",
+        "key4": "udpated"
+    }
+}

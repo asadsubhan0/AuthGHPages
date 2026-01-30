@@ -1,0 +1,39 @@
+- name: "Fetch Vault + merge encrypted secrets"
+        run: |
+          echo "Merging secrets and updating Vault..."
+          if [[ "${{ inputs.build_env }}" == "hodc" || "${{ inputs.build_env }}" == "pcdc" ]]; then
+            engine="prod"
+          else
+            engine="kv"
+          fi
+
+          url="https://azvault.adib.co.ae/v1/${engine}/data/Microservices-secret-store/AppPro/${{ inputs.build_env }}/${{ inputs.MSName }}"
+          curl -s -k -H "X-Vault-Token: ${{ secrets.VAULT_TOKEN }}" "$url" > vault_raw.json || echo '{}'
+          jq -r '.data.data // {}' vault_raw.json > vault_current.json
+
+          jq -s '
+            def nonempty: with_entries(select(.value != "" and .value != null));
+            (.[0]) as $vault
+            | (.[1] | nonempty) as $gist
+            | $vault + $gist
+          ' vault_current.json secretsNeedsInput.json > merged.json
+
+          ENC_KEY=$(echo -n "${{ inputs.application_namespace }}" | sha1sum -t | cut -c1-32)
+          IFS=',' read -ra KEYS <<< "${{ inputs.listOfKeysToBeEncrypted }}"
+          for key in "${KEYS[@]}"; do
+            val=$(jq -r --arg k "$key" '.[$k] // empty' merged.json)
+            [ -z "$val" ] && continue
+            ENC_VAL=$(/data/jdk-11.0.2/bin/java encrypt.Encrypt "$ENC_KEY" "$val" | tr -d '\r')
+            jq --arg k "$key" --arg v "$ENC_VAL" '.[$k]=$v' merged.json > tmp && mv tmp merged.json
+          done
+
+          jq -n --argjson d "$(cat merged.json)" '{data: $d}' > payload.json
+          cat payload.json
+
+          # Uncomment when ready to push to Vault
+          # curl --fail -s -k \
+          #   -H "X-Vault-Token: ${{ secrets.VAULT_TOKEN }}" \
+          #   -H "Content-Type: application/json" \
+          #   --data @payload.json \
+          #   "$url"
+          # echo "Vault updated successfully."

@@ -1,0 +1,80 @@
+name: Push Secrets to Vault
+
+on:
+  workflow_call:
+    inputs:
+      build_env:
+        required: true
+        type: string
+      ms_name:
+        required: true
+        type: string
+      secrets_json:
+        description: 'JSON string of secrets to push'
+        required: true
+        type: string
+
+jobs:
+  push-to-vault:
+    runs-on: ubuntu-latest
+    steps:
+      # Referenced from jenkins/ams-mr-bh.groovy lines 227-250 (addToHashi function)
+      # Specifically lines 229-244 for Vault POST request logic
+      - name: Push to Vault
+        uses: actions/github-script@v6
+        env:
+          VAULT_TOKEN: ${{ secrets.GH_GIST_TOKEN }}
+        with:
+          script: |
+            const https = require('https');
+            
+            // Vault API helper
+            const vault = async (url, method, body) => {
+              const response = await fetch(url, {
+                method,
+                headers: {
+                  'X-Vault-Token': process.env.VAULT_TOKEN,
+                  ...(body && { 'Content-Type': 'application/json' })
+                },
+                body: body ? JSON.stringify(body) : undefined,
+                agent: new https.Agent({ rejectUnauthorized: false })
+              });
+              
+              if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`Vault ${method} failed: ${response.status} - ${errorText}`);
+              }
+              return response;
+            };
+            
+            // Parse secrets
+            const secretsToPush = JSON.parse('${{ inputs.secrets_json }}');
+            const buildEnv = '${{ inputs.build_env }}';
+            const msName = '${{ inputs.ms_name }}';
+            // Referenced from jenkins/ams-mr-bh.groovy lines 230-244 (Vault engine selection and POST)
+            const engine = (buildEnv === 'hodc' || buildEnv === 'pcdc') ? 'prod' : 'kv';
+            const vaultUrl = `https://azvault.adib.co.ae/v1/${engine}/data/Microservices-secret-store/AppPro/${buildEnv}/${msName}`;
+            
+            console.log(`[DEBUG] Pushing to Vault: ${vaultUrl}`);
+            console.log(`[DEBUG] Secrets to push: ${Object.keys(secretsToPush).length}`);
+            
+            // Fetch current Vault data
+            let current = {};
+            try {
+              const response = await vault(vaultUrl, 'GET');
+              const vaultData = await response.json();
+              current = vaultData.data?.data || {};
+              console.log(`[DEBUG] Fetched ${Object.keys(current).length} existing secrets`);
+            } catch (error) {
+              console.log('[DEBUG] Starting with empty Vault');
+            }
+            
+            // Merge (secretsToPush overrides existing)
+            const merged = { ...current, ...secretsToPush };
+            
+            // Push to Vault
+            // Referenced from jenkins/ams-mr-bh.groovy lines 232-236 and 240-244 (Vault POST request)
+            await vault(vaultUrl, 'POST', { data: merged });
+            
+            console.log(`✓ Successfully pushed ${Object.keys(secretsToPush).length} secrets to Vault`);
+

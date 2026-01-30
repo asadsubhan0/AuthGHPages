@@ -1,0 +1,15 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: ghes-auth
+  namespace: default
+spec:
+  host: ghes-auth-app.apps.echannels.adib.co.ae   # your preconfigured route host
+  to:
+    kind: Service
+    name: ghes-auth
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

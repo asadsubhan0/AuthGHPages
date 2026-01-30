@@ -1,0 +1,203 @@
+name: Update Specific Folder in Repo (No Clone)
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo_name:
+        description: 'Repository name (e.g., myreponame)'
+        required: true
+        type: string
+      work_path:
+        description: 'Work path (e.g., workpath)'
+        required: true
+        type: string
+      run_id:
+        description: 'Run ID/folder name (e.g., run-16)'
+        required: true
+        type: string
+      target_repo:
+        description: 'Target repository (owner/repo)'
+        required: true
+        type: string
+      target_branch:
+        description: 'Target branch'
+        required: false
+        type: string
+        default: 'main'
+      commit_message:
+        description: 'Commit message'
+        required: false
+        type: string
+        default: 'Update folder contents'
+      file_updates:
+        description: 'JSON object with file paths and content {"file.txt": "content"}'
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      repo_name:
+        description: 'Repository name (e.g., myreponame)'
+        required: true
+        type: string
+      work_path:
+        description: 'Work path (e.g., workpath)'
+        required: true
+        type: string
+      run_id:
+        description: 'Run ID/folder name (e.g., run-16)'
+        required: true
+        type: string
+      target_repo:
+        description: 'Target repository (owner/repo)'
+        required: true
+        type: string
+      target_branch:
+        description: 'Target branch'
+        required: false
+        type: string
+        default: 'main'
+      commit_message:
+        description: 'Commit message'
+        required: false
+        type: string
+        default: 'Update folder contents'
+      file_updates:
+        description: 'JSON object with file paths and content {"file.txt": "content"}'
+        required: false
+        type: string
+
+jobs:
+  update-folder:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create local folder structure
+        run: |
+          REPO_NAME="${{ inputs.repo_name }}"
+          WORK_PATH="${{ inputs.work_path }}"
+          RUN_ID="${{ inputs.run_id }}"
+          
+          TARGET_FOLDER="$REPO_NAME/$WORK_PATH/$RUN_ID"
+          
+          echo "=== Creating folder structure: $TARGET_FOLDER ==="
+          mkdir -p "$TARGET_FOLDER"
+          
+          echo "=== Folder structure created ==="
+          tree -L 3 "$REPO_NAME" 2>/dev/null || find "$REPO_NAME" -type d | head -10
+
+      - name: Create/Update files in folder
+        if: inputs.file_updates != ''
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            
+            const fileUpdates = JSON.parse('${{ inputs.file_updates }}');
+            const repoName = '${{ inputs.repo_name }}';
+            const workPath = '${{ inputs.work_path }}';
+            const runId = '${{ inputs.run_id }}';
+            const targetFolder = path.join(repoName, workPath, runId);
+            
+            console.log(`Creating/updating ${Object.keys(fileUpdates).length} files in ${targetFolder}...`);
+            
+            for (const [filePath, content] of Object.entries(fileUpdates)) {
+              const fullPath = path.join(targetFolder, filePath);
+              const dir = path.dirname(fullPath);
+              
+              // Create directory if it doesn't exist
+              if (!fs.existsSync(dir)) {
+                fs.mkdirSync(dir, { recursive: true });
+                console.log(`Created directory: ${dir}`);
+              }
+              
+              // Write file
+              fs.writeFileSync(fullPath, content, 'utf8');
+              console.log(`Created/updated file: ${fullPath}`);
+            }
+
+      - name: Initialize git and push only target folder
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REPO_NAME="${{ inputs.repo_name }}"
+          WORK_PATH="${{ inputs.work_path }}"
+          RUN_ID="${{ inputs.run_id }}"
+          TARGET_REPO="${{ inputs.target_repo }}"
+          TARGET_BRANCH="${{ inputs.target_branch }}"
+          TARGET_FOLDER="$REPO_NAME/$WORK_PATH/$RUN_ID"
+          
+          echo "=== Initializing git repository ==="
+          cd "$REPO_NAME"
+          
+          # Initialize git if not already initialized
+          if [ ! -d .git ]; then
+            git init
+            git remote add origin "https://$GITHUB_TOKEN@github.com/$TARGET_REPO.git"
+          else
+            git remote set-url origin "https://$GITHUB_TOKEN@github.com/$TARGET_REPO.git"
+          fi
+          
+          # Fetch only the branch we need (minimal, only refs)
+          echo "=== Fetching target branch reference (minimal) ==="
+          git fetch origin "$TARGET_BRANCH" --depth=1 2>/dev/null || echo "Branch may not exist yet, will create it"
+          
+          # Configure git
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # The folder structure should already exist from previous steps
+          # Verify it exists and back it up before any git operations
+          echo "=== Verifying and backing up folder structure ==="
+          if [ ! -d "$WORK_PATH/$RUN_ID" ]; then
+            echo "ERROR: Folder $WORK_PATH/$RUN_ID not found"
+            exit 1
+          fi
+          echo "Folder structure exists: $WORK_PATH/$RUN_ID"
+          ls -la "$WORK_PATH/$RUN_ID" || echo "Folder is empty"
+          
+          # Backup our folder to temp location before checkout
+          TEMP_BACKUP="/tmp/${RUN_ID}_backup"
+          cp -r "$WORK_PATH/$RUN_ID" "$TEMP_BACKUP"
+          echo "Backed up folder to $TEMP_BACKUP"
+          
+          # Try to checkout existing branch, or create new one
+          if git show-ref --verify --quiet refs/remotes/origin/"$TARGET_BRANCH" 2>/dev/null; then
+            echo "Branch exists, checking out..."
+            git checkout -b "$TARGET_BRANCH" origin/"$TARGET_BRANCH" 2>/dev/null || git checkout "$TARGET_BRANCH"
+          else
+            echo "Branch doesn't exist, creating new branch..."
+            git checkout --orphan "$TARGET_BRANCH" 2>/dev/null || git checkout -b "$TARGET_BRANCH"
+          fi
+          
+          # Restore our folder structure
+          echo "=== Restoring folder structure ==="
+          mkdir -p "$WORK_PATH"
+          cp -r "$TEMP_BACKUP" "$WORK_PATH/$RUN_ID"
+          echo "Restored folder to $WORK_PATH/$RUN_ID"
+          
+          echo "=== Current folder structure in git repo ==="
+          find "$WORK_PATH/$RUN_ID" -type f 2>/dev/null | head -10 || echo "No files in target folder"
+          
+          # Stage only the target folder
+          echo "=== Staging only $WORK_PATH/$RUN_ID ==="
+          git add "$WORK_PATH/$RUN_ID"
+          
+          # Check if there are changes
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          
+          echo "=== Changes detected ==="
+          git status --short
+          
+          # Commit
+          echo "=== Committing changes ==="
+          git commit -m "${{ inputs.commit_message }}"
+          
+          # Push only the branch (using token authentication)
+          echo "=== Pushing changes to $TARGET_BRANCH ==="
+          git push origin "$TARGET_BRANCH" || git push -u origin "$TARGET_BRANCH"
+          
+          echo "✓ Successfully updated folder $WORK_PATH/$RUN_ID in repository"
+

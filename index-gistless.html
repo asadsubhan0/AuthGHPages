@@ -1,0 +1,350 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Secret Collection</title></head>
+<body>
+  <div id="app">Loading...</div>
+  <!--
+  <div id="debugPanel" style="position: fixed; top: 10px; right: 10px; width: 600px; max-height: 500px; background: #f0f0f0; color: #333; padding: 10px; font-family: monospace; font-size: 12px; overflow-y: auto; border: 2px solid #333; z-index: 10000; display: block; box-shadow: 0 4px 8px rgba(0,0,0,0.3);">
+    <div style="background: #333; color: #fff; padding: 8px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
+      <strong>Debug Log</strong>
+      <button onclick="document.getElementById('debugPanel').style.display='none'" style="background: #f00; color: #fff; border: none; cursor: pointer; padding: 5px 10px;">✖</button>
+    </div>
+    <div id="debugOutput" style="background: #fff; padding: 5px;"></div>
+  </div>
+  -->
+<script>
+/*
+// Simple debug logging
+const debugOutput = document.getElementById('debugOutput');
+function debugLog(msg, color = '#000') {
+  const line = document.createElement('div');
+  line.style.color = color;
+  line.style.padding = '2px 5px';
+  line.style.borderBottom = '1px solid #eee';
+  const timestamp = new Date().toLocaleTimeString();
+  line.textContent = `[${timestamp}] ${msg}`;
+  debugOutput.appendChild(line);
+  debugOutput.scrollTop = debugOutput.scrollHeight;
+}
+*/
+function debugLog(msg, color) {
+  // does nothing
+}
+const BACKEND_BASE = "https://auth.mydomain.example"; // route host (TLS) - UPDATE THIS
+debugLog(`BACKEND_BASE: ${BACKEND_BASE}`, '#0066ff');
+
+async function init() {
+  debugLog('Initializing app...', '#0066ff');
+  const params = new URLSearchParams(window.location.search);
+  
+  // NEW: Read msname and workflow_run_id instead of gist_id
+  const msname = params.get("msname");
+  const workflowRunId = params.get("workflow_run_id");
+  
+  debugLog(`MS Name from URL: ${msname || 'missing'}`, '#333');
+  debugLog(`Workflow Run ID from URL: ${workflowRunId || 'missing'}`, '#333');
+  
+  if (!msname || !workflowRunId) {
+    debugLog('Missing required parameters: msname and workflow_run_id', '#ff0000');
+    document.getElementById('app').innerHTML = `
+      <div style="color: red; padding: 20px;">
+        <h3>❌ Missing Parameters</h3>
+        <p>Required URL parameters: msname and workflow_run_id</p>
+        <p>Example: ?msname=MyMicroservice&workflow_run_id=1234567890</p>
+      </div>
+    `;
+    return;
+  }
+  
+  // Clean up URL by removing any tokens from query params for security
+  if (window.location.search) {
+    const cleanUrl = `${window.location.pathname}?msname=${encodeURIComponent(msname)}&workflow_run_id=${encodeURIComponent(workflowRunId)}`;
+    window.history.replaceState({}, document.title, cleanUrl);
+    debugLog('URL cleaned, tokens removed from query string', '#0066ff');
+  }
+
+  // validate session (token is now in HttpOnly cookie)
+  debugLog('Verifying session...', '#0066ff');
+  const verifyUrl = `${BACKEND_BASE}/auth/verify`;
+  debugLog(`Fetch URL: ${verifyUrl}`, '#666');
+  
+  let verify;
+  let data;
+  
+  try {
+    debugLog('Starting fetch request...', '#0066ff');
+    
+    verify = await fetch(verifyUrl, {
+      method: 'GET',
+      mode: 'cors',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
+      },
+      credentials: 'include',
+      cache: 'no-cache'
+    });
+    
+    debugLog(`Fetch completed. Response status: ${verify.status}`, verify.ok ? '#00aa00' : '#ff0000');
+    
+    if (!verify.ok) { 
+      debugLog(`Verify failed (status ${verify.status}), redirecting to login...`, '#ff0000');
+      const currentUrl = window.location.href;
+      window.location.href = `${BACKEND_BASE}/auth/login?returnUrl=${encodeURIComponent(currentUrl)}`;
+      return; 
+    }
+    
+    data = await verify.json();
+  } catch (fetchError) {
+    debugLog(`ERROR during fetch`, '#ff0000');
+    debugLog(`Error type: ${fetchError.name}`, '#ff0000');
+    debugLog(`Error message: ${fetchError.message}`, '#ff0000');
+    
+    if (fetchError.name === 'TypeError') {
+      debugLog('Network error - check if backend is reachable', '#ff0000');
+      document.getElementById('app').innerHTML = `
+        <div style="color: red; padding: 20px;">
+          <h3>❌ Connection Error</h3>
+          <p>Unable to connect to the backend server.</p>
+          <p>Error: ${fetchError.message}</p>
+          <p>URL: ${verifyUrl}</p>
+          <button onclick="window.location.reload()">Retry</button>
+        </div>
+      `;
+      return;
+    } else {
+      debugLog(`Unexpected error: ${fetchError}`, '#ff0000');
+      document.getElementById('app').innerHTML = `
+        <div style="color: red; padding: 20px;">
+          <h3>❌ Error</h3>
+          <p>An error occurred while verifying your token.</p>
+          <p>${fetchError.message}</p>
+          <button onclick="window.location.reload()">Retry</button>
+        </div>
+      `;
+      return;
+    }
+  }
+  
+  debugLog(`Verify response data: ${JSON.stringify(data)}`, '#333');
+  debugLog(`Data.valid = ${data.valid}`, data.valid ? '#00aa00' : '#ff0000');
+  
+  if (!data.valid) { 
+    debugLog('Token invalid, redirecting to login...', '#ff0000');
+    const currentUrl = window.location.href;
+    window.location.href = `${BACKEND_BASE}/auth/login?returnUrl=${encodeURIComponent(currentUrl)}`;
+    return; 
+  }
+
+  debugLog(`Token valid! Showing welcome page for user: ${data.user}`, '#00aa00');
+  
+  // NEW: Get sessionId from workflow_run_id
+  let sessionId = null;
+  let sessionData = null;
+  
+  try {
+    debugLog(`Fetching sessionId from workflow_run_id: ${workflowRunId}`, '#0066ff');
+    const sessionIdResponse = await fetch(`${BACKEND_BASE}/api/sessions/by-run-id/${workflowRunId}`, {
+      credentials: 'include',
+      headers: { 'Accept': 'application/json' }
+    });
+    
+    if (!sessionIdResponse.ok) {
+      throw new Error(`Failed to get session: ${sessionIdResponse.status}`);
+    }
+    
+    const sessionIdData = await sessionIdResponse.json();
+    sessionId = sessionIdData.sessionId;
+    debugLog(`Session ID resolved: ${sessionId}`, '#00aa00');
+    
+    // Fetch session data
+    debugLog(`Fetching session data for sessionId: ${sessionId}`, '#0066ff');
+    const sessionResponse = await fetch(`${BACKEND_BASE}/api/sessions/${sessionId}`, {
+      credentials: 'include',
+      headers: { 'Accept': 'application/json' }
+    });
+    
+    if (!sessionResponse.ok) {
+      throw new Error(`Failed to fetch session: ${sessionResponse.status}`);
+    }
+    
+    sessionData = await sessionResponse.json();
+    debugLog(`Session data fetched: ${JSON.stringify(sessionData)}`, '#00aa00');
+  } catch (err) {
+    debugLog(`Error fetching session: ${err.message}`, '#ff0000');
+    document.getElementById('app').innerHTML = `
+      <div style="color: red; padding: 20px;">
+        <h3>❌ Session Error</h3>
+        <p>Failed to load session data.</p>
+        <p>Error: ${err.message}</p>
+        <button onclick="window.location.reload()">Retry</button>
+      </div>
+    `;
+    return;
+  }
+  
+  // Extract pending secrets from session data
+  const pendingKeys = sessionData.secrets?.pending || [];
+  const metadata = sessionData.metadata || {};
+  
+  debugLog(`Found ${pendingKeys.length} pending secrets`, '#0066ff');
+  
+  debugLog('Updating app element...', '#0066ff');
+  
+  try {
+    const appElement = document.getElementById("app");
+    debugLog(`App element found: ${!!appElement}`, '#333');
+    
+    if (pendingKeys.length === 0) {
+      appElement.innerHTML = `
+        <h3>Welcome ${data.user}</h3>
+        <div style="padding: 20px; background: #e8f5e9; border: 1px solid #4caf50; border-radius: 5px;">
+          <p style="color: #2e7d32; font-weight: bold;">✅ All secrets are set!</p>
+          <p>No secrets marked as TBC or TBD need updating.</p>
+          <p><strong>Microservice:</strong> ${metadata.MSName || msname}</p>
+          <p><strong>Build Environment:</strong> ${metadata.buildEnv || 'N/A'}</p>
+        </div>
+      `;
+      return;
+    }
+    
+    let currentIndex = 0;
+    
+    function renderCurrentField() {
+      if (currentIndex >= pendingKeys.length) {
+        // All fields completed, show summary
+        debugLog('All fields completed!', '#00aa00');
+        
+        appElement.innerHTML = `
+          <h3>Welcome ${data.user}</h3>
+          <div style="padding: 20px; background: #e8f5e9; border: 1px solid #4caf50; border-radius: 5px; text-align: center;">
+            <p style="font-size: 18px; color: #2e7d32; font-weight: bold; margin: 0;">✅ All secrets have been submitted successfully!</p>
+            <p style="margin-top: 10px; color: #666;">You may close this form.</p>
+            <p style="margin-top: 10px;"><strong>Microservice:</strong> ${metadata.MSName || msname}</p>
+            <p><strong>Build Environment:</strong> ${metadata.buildEnv || 'N/A'}</p>
+          </div>
+        `;
+        return;
+      }
+      
+      const key = pendingKeys[currentIndex];
+      const progress = `${currentIndex + 1} of ${pendingKeys.length}`;
+      
+      appElement.innerHTML = `
+        <h3>Welcome ${data.user}</h3>
+        <div style="margin-bottom: 10px; color: #666;">
+          <p><strong>Microservice:</strong> ${metadata.MSName || msname}</p>
+          <p><strong>Build Environment:</strong> ${metadata.buildEnv || 'N/A'}</p>
+          <p><strong>Progress:</strong> ${progress}</p>
+        </div>
+        <div style="padding: 20px; background: #f5f5f5; border-radius: 5px;">
+          <div style="margin-bottom: 20px;">
+            <label style="display: block; font-weight: bold; margin-bottom: 10px; font-size: 18px;">${key}:</label>
+            <input 
+              id="currentInput" 
+              type="password" 
+              placeholder="Enter secret value for ${key}" 
+              style="width: 100%; padding: 12px; font-size: 16px; border: 2px solid #ddd; border-radius: 5px;"
+              required
+              autofocus
+              autocomplete="off"
+            />
+          </div>
+          <button id="updateBtn" style="width: 100%; background: #4caf50; color: white; padding: 12px; font-size: 16px; border: none; border-radius: 5px; cursor: pointer;">
+            Submit
+          </button>
+        </div>
+        <div id="status" style="margin-top: 20px;"></div>
+      `;
+      
+      const input = document.getElementById('currentInput');
+      const updateBtn = document.getElementById('updateBtn');
+      
+      updateBtn.addEventListener('click', async () => {
+        const inputValue = input.value.trim();
+        if (!inputValue) {
+          document.getElementById('status').textContent = '❌ Please enter a value';
+          document.getElementById('status').style.color = 'red';
+          return;
+        }
+        
+        // Disable button and show loading state
+        updateBtn.disabled = true;
+        updateBtn.textContent = 'Submitting...';
+        document.getElementById('status').textContent = '';
+        
+        try {
+          // NEW: Submit secret to backend session endpoint
+          debugLog(`Submitting ${key} to backend...`, '#0066ff');
+          
+          const submitResponse = await fetch(`${BACKEND_BASE}/api/sessions/${sessionId}/secrets`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ key, value: inputValue })
+          });
+          
+          if (!submitResponse.ok) {
+            const errorText = await submitResponse.text();
+            debugLog(`Secret submission failed: ${errorText}`, '#ff0000');
+            throw new Error(`Failed to submit secret: ${errorText}`);
+          }
+          
+          const submitResult = await submitResponse.json();
+          debugLog(`✅ ${key} submitted successfully`, '#00aa00');
+          debugLog(`Response: ${JSON.stringify(submitResult)}`, '#333');
+          
+          document.getElementById('status').innerHTML = '<div style="color: green; padding: 10px; background: #e8f5e9; border-radius: 5px;">✅ Submitted successfully!</div>';
+          
+          // Check if all secrets are completed
+          if (submitResult.allCompleted) {
+            debugLog('All secrets completed!', '#00aa00');
+            // Refresh session data to get updated pending list
+            const updatedSessionResponse = await fetch(`${BACKEND_BASE}/api/sessions/${sessionId}`, {
+              credentials: 'include',
+              headers: { 'Accept': 'application/json' }
+            });
+            const updatedSession = await updatedSessionResponse.json();
+            pendingKeys.length = 0;
+            pendingKeys.push(...(updatedSession.secrets?.pending || []));
+          } else {
+            // Update pending list from response
+            pendingKeys.length = 0;
+            pendingKeys.push(...(submitResult.pendingKeys || []));
+          }
+          
+          // Move to next field after short delay
+          setTimeout(() => {
+            currentIndex++;
+            renderCurrentField();
+          }, 500);
+        } catch (err) {
+          debugLog(`Error submitting secret: ${err.message}`, '#ff0000');
+          document.getElementById('status').innerHTML = `<div style="color: red; padding: 10px; background: #ffebee; border-radius: 5px;">❌ ${err.message}</div>`;
+          updateBtn.disabled = false;
+          updateBtn.textContent = 'Submit';
+        }
+      });
+      
+      // Allow Enter key to submit
+      input.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter' && !updateBtn.disabled) {
+          updateBtn.click();
+        }
+      });
+    }
+    
+    renderCurrentField();
+    debugLog('App element updated successfully!', '#00aa00');
+  } catch (err) {
+    debugLog(`ERROR updating app element: ${err.message}`, '#ff0000');
+  }
+}
+
+init();
+</script>
+</body>
+</html>
+

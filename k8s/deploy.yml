@@ -1,0 +1,88 @@
+# save as ghes-auth-deployment.yaml or pipe it to oc apply
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ghes-auth
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ghes-auth
+  template:
+    metadata:
+      labels:
+        app: ghes-auth
+    spec:
+      containers:
+        - name: ghes-auth
+          image: image-registry.openshift-image-registry.svc:5000/default/ghes-auth-app:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+          env:
+            - name: PORT
+              value: "3000"
+            - name: HOST_ROUTE_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: ghes-auth-secrets
+                  key: host_route_host
+            - name: GH_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ghes-auth-secrets
+                  key: gh_base_url
+                  optional: true
+            - name: GH_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: ghes-auth-secrets
+                  key: gh_client_id
+            - name: GH_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: ghes-auth-secrets
+                  key: gh_client_secret
+            - name: GH_PAGES_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ghes-auth-secrets
+                  key: gh_pages_url
+            - name: ORG_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: ghes-auth-secrets
+                  key: org_name
+                  optional: true
+            - name: TEAM_SLUG
+              valueFrom:
+                secretKeyRef:
+                  name: ghes-auth-secrets
+                  key: team_slug
+                  optional: true
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: ghes-auth-secrets
+                  key: jwt_secret
+            - name: ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ghes-auth-secrets
+                  key: encryption_key
+            - name: GIST_FILENAME
+              valueFrom:
+                secretKeyRef:
+                  name: ghes-auth-secrets
+                  key: gist_filename
+                  optional: true
+            - name: GH_CA_CERT_PATH
+              value: "/etc/gh-ca/gh_ca.pem"
+          volumeMounts:
+            - name: gh-ca
+              mountPath: /etc/gh-ca
+              readOnly: true
+      volumes:
+        - name: gh-ca
+          secret:
+            secretName: ghes-ca-cert

@@ -1,0 +1,90 @@
+name: Get Vault Data and Encryption Key
+
+on:
+  workflow_call:
+    inputs:
+      build_env:
+        required: true
+        type: string
+      ms_name:
+        required: true
+        type: string
+      application_namespace:
+        required: true
+        type: string
+    outputs:
+      vault_data:
+        description: 'Current Vault data object'
+        value: ${{ jobs.get-vault-data.outputs.vault_data }}
+      enc_key:
+        description: 'Encryption key'
+        value: ${{ jobs.get-vault-data.outputs.enc_key }}
+
+jobs:
+  get-vault-data:
+    runs-on: ubuntu-latest
+    outputs:
+      vault_data: ${{ steps.get-data.outputs.vault_data }}
+      enc_key: ${{ steps.get-data.outputs.enc_key }}
+    steps:
+      # Referenced from jenkins/ams-mr-bh.groovy lines 87-100 (Vault data fetching in collectSecretsFromUsers)
+      # Referenced from jenkins/ams-mr-bh.groovy lines 137-148 (getAbsoluteEncKey function)
+      - name: Get Vault Data and Encryption Key
+        uses: actions/github-script@v6
+        id: get-data
+        env:
+          VAULT_TOKEN: ${{ secrets.GH_GIST_TOKEN }}
+        with:
+          script: |
+            const https = require('https');
+            const crypto = require('crypto');
+            
+            // Helper: Generate SHA1 hash (first 32 chars)
+            // Referenced from jenkins/ams-mr-bh.groovy lines 150-161 (encWithHash function)
+            const sha1Hash = (text) => {
+              return crypto.createHash('sha1').update(text).digest('hex').substring(0, 32);
+            };
+            
+            // Fetch current Vault data
+            // Referenced from jenkins/ams-mr-bh.groovy lines 87-100 (Vault GET request)
+            const buildEnv = '${{ inputs.build_env }}';
+            const msName = '${{ inputs.ms_name }}';
+            const engine = (buildEnv === 'hodc' || buildEnv === 'pcdc') ? 'prod' : 'kv';
+            const vaultUrl = `https://azvault.adib.co.ae/v1/${engine}/data/Microservices-secret-store/AppPro/${buildEnv}/${msName}`;
+            
+            let vaultData = {};
+            
+            try {
+              const vaultResponse = await fetch(vaultUrl, {
+                method: 'GET',
+                headers: { 'X-Vault-Token': process.env.VAULT_TOKEN },
+                agent: new https.Agent({ rejectUnauthorized: false })
+              });
+              
+              if (vaultResponse.ok) {
+                const data = await vaultResponse.json();
+                vaultData = data.data?.data || {};
+                console.log(`[DEBUG] Fetched ${Object.keys(vaultData).length} secrets from Vault`);
+              }
+            } catch (error) {
+              console.log('[DEBUG] Vault path may not exist, starting fresh');
+            }
+            
+            // Get encryption key (equivalent to getAbsoluteEncKey)
+            // Referenced from jenkins/ams-mr-bh.groovy lines 137-148 (getAbsoluteEncKey function)
+            // Specifically lines 138-147 for encryption key retrieval and TBD check
+            let encKey = '9c843a91d57b1c37f6ce98d66045bf90'; // default (line 138)
+            if (vaultData['app-config.secret-encryption.encryption-key']) {
+              encKey = vaultData['app-config.secret-encryption.encryption-key'].trim();
+              // Referenced from jenkins/ams-mr-bh.groovy lines 142-144 (TBD check and encWithHash call)
+              if (encKey === 'TBD') {
+                encKey = sha1Hash('${{ inputs.application_namespace }}');
+                console.log('[DEBUG] Generated encryption key from namespace');
+              }
+            }
+            
+            console.log(`[DEBUG] Using encryption key: ${encKey.substring(0, 8)}...`);
+            
+            core.setOutput('vault_data', JSON.stringify(vaultData));
+            core.setOutput('enc_key', encKey);
+

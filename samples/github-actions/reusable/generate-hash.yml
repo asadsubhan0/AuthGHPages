@@ -1,0 +1,43 @@
+name: Generate SHA1 Hash
+
+on:
+  workflow_call:
+    inputs:
+      text:
+        required: true
+        type: string
+      suffix:
+        description: 'Optional suffix (e.g., -jks)'
+        required: false
+        type: string
+        default: ''
+    outputs:
+      hash:
+        description: 'SHA1 hash (first 32 characters)'
+        value: ${{ jobs.generate-hash.outputs.hash }}
+
+jobs:
+  generate-hash:
+    runs-on: ubuntu-latest
+    outputs:
+      hash: ${{ steps.hash.outputs.hash }}
+    steps:
+      # Referenced from jenkins/ams-mr-bh.groovy lines 150-161 (encWithHash function)
+      # Referenced from jenkins/ams-mr-bh.groovy lines 163-172 (encKSPWDWithHash function)
+      # Specifically lines 151-157 for SHA1 hash generation with substring(0, 32)
+      - name: Generate SHA1 Hash
+        uses: actions/github-script@v6
+        id: hash
+        with:
+          script: |
+            const crypto = require('crypto');
+            
+            const text = '${{ inputs.text }}' + '${{ inputs.suffix }}';
+            // Referenced from jenkins/ams-mr-bh.groovy lines 157 and 170 (substring(0, 32))
+            const hash = crypto.createHash('sha1').update(text).digest('hex').substring(0, 32);
+            
+            console.log(`[DEBUG] Generated hash for: ${text.substring(0, 10)}...`);
+            console.log(`[DEBUG] Hash: ${hash}`);
+            
+            core.setOutput('hash', hash);
+

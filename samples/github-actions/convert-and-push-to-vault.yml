@@ -1,0 +1,54 @@
+name: Convert Variables and Push to Vault
+
+on:
+  workflow_dispatch:
+    inputs:
+      secretsNeedsInput:
+        description: 'Comma-separated list of variable names'
+        required: true
+        type: string
+      MSName:
+        description: 'Microservice name'
+        required: true
+        type: string
+      build_env:
+        description: 'Build environment'
+        required: true
+        type: string
+      application_namespace:
+        description: 'Application Namespace'
+        required: false
+        type: string
+      vault_secret_path:
+        description: 'Vault secret path (e.g., secret/data/myapp)'
+        required: false
+        type: string
+      vault_addr:
+        description: 'Vault server address'
+        required: false
+        type: string
+      gist_token:
+        description: 'GitHub token for gist operations'
+        required: false
+        type: string
+
+jobs:
+  create-gist:
+    uses: ./.github/workflows/convert-with-key-status.yml
+    with:
+      secretsNeedsInput: ${{ inputs.secretsNeedsInput }}
+      MSName: ${{ inputs.MSName }}
+      build_env: ${{ inputs.build_env }}
+      gist_token: ${{ inputs.gist_token }}
+
+  push-to-vault:
+    needs: create-gist
+    uses: ./.github/workflows/fetch-and-push-to-vault.yml
+    with:
+      gist_id: ${{ needs.create-gist.outputs.gist_id }}
+      build_env: ${{ inputs.build_env }}
+      ms_name: ${{ inputs.MSName }}
+      vault_secret_path: ${{ inputs.vault_secret_path }}
+      vault_addr: ${{ inputs.vault_addr }}
+    secrets: inherit
+

@@ -1,0 +1,394 @@
+name: AMS MR Black Hole - Secret Collection
+
+on:
+  workflow_dispatch:
+    inputs:
+      releaseVersion:
+        description: 'Release Version'
+        required: true
+        type: string
+      msName:
+        description: 'Microservice Name'
+        required: true
+        type: string
+      secretsNeedsInput:
+        description: 'Comma-separated list of secrets that need input'
+        required: true
+        type: string
+      build_env:
+        description: 'Build Environment'
+        required: true
+        type: choice
+        options:
+          - uat
+          - hodc
+          - pcdc
+          - sit
+          - dev
+      application_namespace:
+        description: 'Application Namespace'
+        required: true
+        type: string
+      listOfKeysToBeEncrypted:
+        description: 'Comma-separated list of keys to be encrypted'
+        required: false
+        type: string
+        default: ''
+      node_name:
+        description: 'Node Name'
+        required: false
+        type: string
+      upstream_workspace:
+        description: 'Upstream Workspace'
+        required: false
+        type: string
+      imageTagDetails:
+        description: 'Image Tag Details'
+        required: false
+        type: string
+
+jobs:
+  build-details:
+    runs-on: ubuntu-latest
+    steps:
+      # Referenced from jenkins/ams-mr-bh.groovy lines 15-21 (Build Details stage)
+      - name: Build Details
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            
+            const summary = [
+              '## Build Details',
+              '',
+              '| Parameter | Value |',
+              '|-----------|-------|',
+              `| **Release Version** | ${{ inputs.releaseVersion }} |`,
+              `| **Microservice Name** | ${{ inputs.msName }} |`,
+              `| **Environment** | ${{ inputs.build_env }} |`,
+              ''
+            ].join('\n');
+            
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
+
+
+  collect-secrets:
+    needs: build-details
+    runs-on: ubuntu-latest
+    steps:
+      # Referenced from jenkins/ams-mr-bh.groovy lines 23-50 (Scrum Master prepared secret holder stage)
+      # Specifically lines 29, 31, 34-39 for secret filtering logic
+      - name: Display Pending Secrets
+        run: |
+          echo "::notice title=Pending Secrets::Following secrets are pending for ${{ inputs.msName }}:"
+          echo "${{ inputs.secretsNeedsInput }}" | tr ',' '\n' | while read secret; do
+            trimmed=$(echo "$secret" | xargs)
+            if [[ "$trimmed" != "app-config.secret-encryption.encryption-key" ]] || \
+               [[ "$trimmed" == "app.key-store-password" && ("${{ inputs.build_env }}" == "hodc" || "${{ inputs.build_env }}" == "pcdc") ]]; then
+              echo "  - $trimmed"
+            fi
+          done
+
+      #- name: Wait for Manual Approval
+      #  uses: trstringer/manual-approval@v1
+      #  with:
+      #    approvers: '007431,919902,917664,921816,921119,921819'
+      #   minimum-approvals: 1
+      #    instructions: 'Ready to collect secrets for ${{ inputs.msName }} in release ${{ inputs.releaseVersion }}?'
+
+
+      # Referenced from jenkins/ams-mr-bh.groovy lines 43-47 (input message for approval)
+      - name: Wait for Manual Approval
+        uses: actions/github-script@v6
+        env:
+          APPROVAL_REQUIRED: true
+        with:
+          script: |
+            console.log('::notice title=Approval Required::Ready to collect secrets for ${{ inputs.msName }} in release ${{ inputs.releaseVersion }}?');
+            console.log('Please approve this workflow run in the GitHub Actions UI to continue.');
+
+      # Referenced from jenkins/ams-mr-bh.groovy lines 43-47 (input approval with submitter parameter)
+      - name: Wait for Approval (Native GitHub Environment)
+        environment:
+          name: secret-collection-approval
+          url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          echo "✓ Approval received. Proceeding with secret collection..."
+
+      # Referenced from jenkins/ams-mr-bh.groovy lines 84-101 (collectSecretsFromUsers function)
+      # Specifically lines 87-100 for Vault data fetching and line 101 for getAbsoluteEncKey call
+      - name: Get Vault Data and Encryption Key
+        id: vault-data
+        uses: ./.github/workflows/reusable/get-vault-data.yml
+        with:
+          build_env: ${{ inputs.build_env }}
+          ms_name: ${{ inputs.msName }}
+          application_namespace: ${{ inputs.application_namespace }}
+
+      # Referenced from jenkins/ams-mr-bh.groovy lines 163-172 (encKSPWDWithHash function)
+      - name: Generate Hash for Key Store Password
+        if: |
+          contains(inputs.secretsNeedsInput, 'app.key-store-password') && 
+          (inputs.build_env == 'hodc' || inputs.build_env == 'pcdc')
+        id: hash-kspwd
+        uses: ./.github/workflows/reusable/generate-hash.yml
+        with:
+          text: ${{ inputs.application_namespace }}
+          suffix: '-jks'
+
+      # Referenced from jenkins/ams-mr-bh.groovy lines 103-130 (collectSecretsFromUsers function)
+      # Specifically lines 103-111 for secret filtering and lines 113-130 for preparing secrets with resurrectZombie
+      # Referenced from jenkins/ams-mr-bh.groovy lines 174-212 (resurrectZombie function)
+      # Specifically lines 178-190 for secret value assignment logic
+      - name: Prepare Secrets Object
+        uses: actions/github-script@v6
+        id: prepare-secrets
+        env:
+          VAULT_DATA: ${{ steps.vault-data.outputs.vault_data }}
+          ENC_KEY: ${{ steps.vault-data.outputs.enc_key }}
+        with:
+          script: |
+            const crypto = require('crypto');
+            
+            // Helper: Generate SHA1 hash (first 32 chars)
+            // Referenced from jenkins/ams-mr-bh.groovy lines 150-161 (encWithHash function)
+            const sha1Hash = (text) => {
+              return crypto.createHash('sha1').update(text).digest('hex').substring(0, 32);
+            };
+            
+            // Referenced from jenkins/ams-mr-bh.groovy line 102 (entries = readJSON text: jsonOutput)
+            const entries = { data: { data: JSON.parse(process.env.VAULT_DATA) } };
+            // Referenced from jenkins/ams-mr-bh.groovy line 116 (encKeyVal = getAbsoluteEncKey(entries))
+            const encKeyVal = process.env.ENC_KEY;
+            // Referenced from jenkins/ams-mr-bh.groovy line 84 (buildEnvironment parameter)
+            const buildEnvironment = '${{ inputs.build_env }}';
+            // Referenced from jenkins/ams-mr-bh.groovy line 84 (MicroserviceName parameter)
+            const MicroserviceName = '${{ inputs.msName }}';
+            
+            // Parse secrets list
+            // Referenced from jenkins/ams-mr-bh.groovy line 103 (listOfSecrets)
+            const listOfSecrets = '${{ inputs.secretsNeedsInput }}'
+              .replace(/[\[\]]/g, '')
+              .split(',')
+              .map(s => s.trim())
+              .filter(s => s);
+            
+            // Filter out app.key-store-password for prod if present
+            // Referenced from jenkins/ams-mr-bh.groovy lines 106-111
+            let filteredSecrets = listOfSecrets;
+            if (listOfSecrets.includes('app.key-store-password') && (buildEnvironment === 'hodc' || buildEnvironment === 'pcdc')) {
+              filteredSecrets = listOfSecrets.filter(s => s.trim() !== 'app.key-store-password');
+              console.log(`The list of secrets: ${filteredSecrets.join(', ')}`);
+            } else {
+              console.log(`The list of secrets: ${listOfSecrets.join(', ')}`);
+            }
+            
+            // Prepare secrets object with TBC values (equivalent to resurrectZombie logic)
+            // Referenced from jenkins/ams-mr-bh.groovy lines 113-130 (secrets preparation loop)
+            // Note: Loop uses listOfSecrets (not filteredSecrets) - filtering is only for logging
+            // Referenced from jenkins/ams-mr-bh.groovy lines 178-190 (resurrectZombie value assignment)
+            const secretsObj = {};
+            const keyStatus = {};
+            
+            // Referenced from jenkins/ams-mr-bh.groovy line 113 (for(String ele : listOfSecrets))
+            for (const ele of listOfSecrets) {
+              // Referenced from jenkins/ams-mr-bh.groovy line 115 (requiredKey = ele.trim())
+              const requiredKey = ele.trim();
+              
+              if (requiredKey === 'app-config.secret-encryption.encryption-key') {
+                secretsObj[requiredKey] = encKeyVal;
+              } else if (requiredKey === 'app.key-store-password' && (buildEnvironment === 'hodc' || buildEnvironment === 'pcdc')) {
+                secretsObj[requiredKey] = '${{ steps.hash-kspwd.outputs.hash }}' || sha1Hash('${{ inputs.application_namespace }}-jks');
+              } else {
+                secretsObj[requiredKey] = 'TBC';
+              }
+              keyStatus[requiredKey] = 'open';
+            }
+            
+            // Add existing vault secrets (that aren't being updated)
+            // Referenced from jenkins/ams-mr-bh.groovy lines 118-129 (entries.data.data iteration)
+            for (const [key, value] of Object.entries(entries.data.data)) {
+              if (!secretsObj.hasOwnProperty(key)) {
+                secretsObj[key] = value;
+              }
+            }
+            
+            secretsObj.key_status = keyStatus;
+            
+            console.log(`[DEBUG] Prepared ${Object.keys(secretsObj).length} secrets`);
+            // Use filteredSecrets for count (since app.key-store-password is auto-generated in prod)
+            const secretsNeedingInput = (buildEnvironment === 'hodc' || buildEnvironment === 'pcdc' && listOfSecrets.includes('app.key-store-password'))
+              ? filteredSecrets.length
+              : listOfSecrets.length;
+            console.log(`[DEBUG] Secrets needing input: ${secretsNeedingInput}`);
+            
+            core.setOutput('secrets_obj', JSON.stringify(secretsObj));
+
+      # Note: Create Gist step is a new GitHub Actions implementation
+      # Replaces the interactive input mechanism from jenkins/ams-mr-bh.groovy lines 174-212 (resurrectZombie function)
+      # Instead of prompting user input, secrets are collected via web form in Gist
+      - name: Create Gist with Secrets List
+        id: create-gist
+        uses: ./.github/workflows/reusable/create-secrets-gist.yml
+        with:
+          ms_name: ${{ inputs.msName }}
+          build_env: ${{ inputs.build_env }}
+          release_version: ${{ inputs.releaseVersion }}
+          secrets_obj: ${{ steps.prepare-secrets.outputs.secrets_obj }}
+
+      - name: Set Outputs
+        run: |
+          echo "gist_id=${{ steps.create-gist.outputs.gist_id }}" >> $GITHUB_OUTPUT
+          echo "gist_url=${{ steps.create-gist.outputs.gist_url }}" >> $GITHUB_OUTPUT
+          echo "enc_key=${{ steps.vault-data.outputs.enc_key }}" >> $GITHUB_OUTPUT
+
+      - name: Display Gist URL
+        run: |
+          echo "::notice title=Secret Collection Gist::Please fill in the secrets at: ${{ steps.create-gist.outputs.gist_url }}"
+          echo "Gist ID: ${{ steps.create-gist.outputs.gist_id }}"
+          echo "Once all secrets are filled, the workflow will automatically push them to Vault."
+
+      - name: Wait for Secrets to be Filled
+        environment:
+          name: secrets-filled-approval
+          url: ${{ steps.create-gist.outputs.gist_url }}
+        run: |
+          echo "✓ Approval received. Proceeding to push secrets to Vault..."
+          echo "Gist URL: ${{ steps.create-gist.outputs.gist_url }}"
+
+      # Referenced from jenkins/ams-mr-bh.groovy lines 174-212 (resurrectZombie function)
+      # Specifically lines 194-208 for encryption logic with listOfKeysToBeEncrypted
+      - name: Fetch and Process Gist Secrets
+        uses: actions/github-script@v6
+        id: process-gist
+        env:
+          CA_CERT: ${{ secrets.GH_CA_CERT }}
+          ENCRYPTION_KEY: ${{ secrets.ENCRY }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const https = require('https');
+            const crypto = require('crypto');
+            
+            // Helper: Decrypt (from storage format)
+            const decrypt = (value, key) => {
+              if (!value.startsWith('enc:')) return value;
+              const [, ivHex, tagHex, encrypted] = value.split(':');
+              let keyBuf = Buffer.from(key);
+              if (keyBuf.length < 32) {
+                keyBuf = Buffer.concat([keyBuf, Buffer.alloc(32 - keyBuf.length)]);
+              } else {
+                keyBuf = keyBuf.slice(0, 32);
+              }
+              const decipher = crypto.createDecipheriv('aes-256-gcm', keyBuf, Buffer.from(ivHex, 'hex'));
+              decipher.setAuthTag(Buffer.from(tagHex, 'hex'));
+              return decipher.update(encrypted, 'hex', 'utf8') + decipher.final('utf8');
+            };
+            
+            // Helper: Encrypt using Java Encrypt class format (placeholder)
+            // Referenced from jenkins/ams-mr-bh.groovy lines 199-207 (Java encrypt.Encrypt call)
+            // Referenced from jenkins/ams-mr-bh.groovy line 203 (encKeyVal parameter in Java call)
+            const encryptWithJavaFormat = (plaintext, encKeyVal) => {
+              // Note: Actual implementation may need to call Java encrypt.Encrypt class
+              // Example: jdk-11.0.2/bin/java encrypt.Encrypt "${encKeyVal}" ${plaintext}
+              return plaintext; // Placeholder
+            };
+            
+            // Fetch gist with filled secrets
+            const gistId = '${{ steps.create-gist.outputs.gist_id }}';
+            const agent = process.env.CA_CERT?.trim()
+              ? new https.Agent({
+                  ca: Buffer.from(process.env.CA_CERT.trim(), 'utf8'),
+                  rejectUnauthorized: true
+                })
+              : null;
+            
+            const gist = await github.rest.gists.get({
+              gist_id: gistId,
+              request: agent ? { agent } : undefined
+            });
+            
+            // Referenced from jenkins/ams-mr-bh.groovy line 102 (entries = readJSON)
+            const entries = { data: { data: JSON.parse(gist.data.files['secretsNeedsInput.json'].content) } };
+            // Referenced from jenkins/ams-mr-bh.groovy line 116 (encKeyVal)
+            const encKeyVal = '${{ steps.vault-data.outputs.enc_key }}';
+            // Referenced from jenkins/ams-mr-bh.groovy line 84 (buildEnvironment parameter)
+            const buildEnvironment = '${{ inputs.build_env }}';
+            // Referenced from jenkins/ams-mr-bh.groovy line 84 (MicroserviceName parameter)
+            const MicroserviceName = '${{ inputs.msName }}';
+            // Referenced from jenkins/ams-mr-bh.groovy line 195 (params.listOfKeysToBeEncrypted.contains check)
+            const listOfKeysToBeEncrypted = '${{ inputs.listOfKeysToBeEncrypted }}'
+              .split(',')
+              .map(s => s.trim())
+              .filter(s => s);
+            
+            // Process secrets (equivalent to resurrectZombie logic)
+            // Referenced from jenkins/ams-mr-bh.groovy lines 113-130 (loop through secrets)
+            // Referenced from jenkins/ams-mr-bh.groovy lines 174-212 (resurrectZombie function)
+            const secretsToPush = {};
+            
+            for (const [key, value] of Object.entries(entries.data.data)) {
+              if (key === 'key_status') continue;
+              if (value === 'TBC' || value === 'TBD') continue;
+              
+              // Referenced from jenkins/ams-mr-bh.groovy line 176 (inputTxt variable in resurrectZombie)
+              let inputTxt = value;
+              
+              // Decrypt from storage format if encrypted
+              if (typeof value === 'string' && value.startsWith('enc:')) {
+                inputTxt = decrypt(value, process.env.ENCRYPTION_KEY);
+              }
+              
+              // Encrypt if key is in the list (using Java Encrypt class format)
+              // Referenced from jenkins/ams-mr-bh.groovy lines 195-207
+              if (listOfKeysToBeEncrypted.includes(key) && !inputTxt.startsWith('ENC(')) {
+                // Referenced from jenkins/ams-mr-bh.groovy line 196 (echo about secret in encryption list)
+                console.log(`\u001B[31m${key} is in the list (${listOfKeysToBeEncrypted.join(', ')})\u001B[0m`);
+                // Referenced from jenkins/ams-mr-bh.groovy line 199-207 (Java encrypt call)
+                inputTxt = encryptWithJavaFormat(inputTxt, encKeyVal);
+              }
+              
+              secretsToPush[key] = inputTxt;
+            }
+            
+            console.log(`[DEBUG] Processed ${Object.keys(secretsToPush).length} secrets for Vault push`);
+            
+            core.setOutput('secrets_json', JSON.stringify(secretsToPush));
+
+      # Referenced from jenkins/ams-mr-bh.groovy lines 227-250 (addToHashi function)
+      # Specifically lines 229-244 for Vault POST request logic
+      - name: Push Secrets to Vault
+        uses: ./.github/workflows/reusable/push-to-vault.yml
+        with:
+          build_env: ${{ inputs.build_env }}
+          ms_name: ${{ inputs.msName }}
+          secrets_json: ${{ steps.process-gist.outputs.secrets_json }}
+
+      # Referenced from jenkins/ams-mr-bh.groovy lines 60-80 (Update the deployment config file stage)
+      # Specifically lines 63-76 for downstream job trigger with parameters
+      - name: Trigger Downstream Job (if needed)
+        if: |
+          inputs.secretsNeedsInput != '' && 
+          !(inputs.build_env == 'uat' || inputs.build_env == 'hodc' || inputs.build_env == 'pcdc')
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            // Trigger downstream workflow if configured
+            // Referenced from jenkins/ams-mr-bh.groovy lines 67-75 (build job parameters)
+            // Example: await github.rest.actions.createWorkflowDispatch({
+            //   owner: 'org',
+            //   repo: 'repo',
+            //   workflow_id: 'workflow.yml',
+            //   ref: 'main',
+            //   inputs: {
+            //     NODE_NAME: '${{ inputs.node_name }}',
+            //     APPLICATION_NAMESPACE: '${{ inputs.application_namespace }}',
+            //     MSName: '${{ inputs.msName }}',
+            //     UPSTREAM_WORKSPACE: '${{ inputs.upstream_workspace }}',
+            //     BUILD_ENV: '${{ inputs.build_env }}',
+            //     imageTagDetails: '${{ inputs.imageTagDetails }}'
+            //   }
+            // });
+            console.log('Downstream job trigger logic would go here');
+

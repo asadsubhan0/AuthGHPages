@@ -1,0 +1,298 @@
+name: Convert Variables with key_status
+
+on:
+  workflow_dispatch:
+    inputs:
+      secretsNeedsInput:
+        description: 'Comma-separated list of variable names'
+        required: true
+        type: string
+      gist_description:
+        description: 'Gist description'
+        required: false
+        type: string
+        default: 'Variables configuration'
+      gist_filename:
+        description: 'Filename in gist'
+        required: false
+        type: string
+        default: 'secretsNeedsInput.json'
+      MSName:
+        description: 'Microservice name'
+        required: true
+        type: string
+      build_env:
+        description: 'Build environment'
+        required: true
+        type: string
+      gist_token:
+        description: 'GitHub token for gist operations'
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      secretsNeedsInput:
+        description: 'Comma-separated list of variable names'
+        required: true
+        type: string
+      gist_description:
+        description: 'Gist description'
+        required: false
+        type: string
+        default: 'Variables configuration'
+      gist_filename:
+        description: 'Filename in gist'
+        required: false
+        type: string
+        default: 'secretsNeedsInput.json'
+      MSName:
+        description: 'Microservice name'
+        required: true
+        type: string
+      build_env:
+        description: 'Build environment'
+        required: true
+        type: string
+      gist_token:
+        description: 'GitHub token for gist operations'
+        required: false
+        type: string
+    outputs:
+      gist_id:
+        description: 'Created Gist ID'
+        value: ${{ jobs.convert.outputs.gist_id }}
+      gist_url:
+        description: 'Created Gist URL'
+        value: ${{ jobs.convert.outputs.gist_url }}
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    outputs:
+      gist_id: ${{ steps.convert.outputs.gist_id }}
+      gist_url: ${{ steps.convert.outputs.gist_url }}
+    steps:
+      - name: Prepare and Create gist for secretsNeedsInputs
+        uses: actions/github-script@v6
+        id: convert
+        env:
+          CA_CERT: ${{ secrets.GH_CA_CERT }}
+        with:
+          github-token: ${{ inputs.gist_token || github.token }}
+          script: |
+            const https = require('https');
+            
+            // Create HTTPS agent with CA certificate if provided
+            const caCert = process.env.CA_CERT?.trim();
+            const agent = caCert ? new https.Agent({
+              ca: Buffer.from(caCert, 'utf8'),
+              rejectUnauthorized: true
+            }) : null;
+            
+            // Get inputs from workflow
+            const varsInput = '${{ inputs.secretsNeedsInput }}';
+            const msName = '${{ inputs.MSName }}';
+            const buildEnv = '${{ inputs.build_env }}';
+            
+            // Prepare vars as JSON for input
+            const vars = varsInput.split(',').map(v => v.trim()).filter(v => v);
+            const json = {};
+            const status = {};
+            
+            vars.forEach(name => {
+              json[name] = 'TBC';
+              status[name] = 'open';
+            });
+            
+            json.key_status = status;
+            const jsonString = JSON.stringify(json, null, 2);
+            
+            console.log('Generated JSON:');
+            console.log(jsonString);
+                        
+            const metadata = {
+              status: 'awaiting_input',
+              submitted_by: '',
+              approved_by: '',
+              submitted_at: '',
+              approved_at: '',
+              notes: ''
+            };
+            const metadataString = JSON.stringify(metadata, null, 2);
+            
+            console.log('Generated Metadata:');
+            console.log(metadataString);
+            
+            const description = `Secrets Input for ${msName} (${buildEnv})`;
+            
+            const result = await github.rest.gists.create({
+              description: description,
+              public: false,
+              files: {
+                'secretsNeedsInput.json': {
+                  content: jsonString
+                },
+                'metadata.json': {
+                  content: metadataString
+                }
+              },
+              request: agent ? { agent } : undefined
+            });
+            
+            console.log(`Created new gist: ${result.data.id}`);
+            console.log(`Gist URL: ${result.data.html_url}`);
+            
+            core.setOutput('gist_id', result.data.id);
+            core.setOutput('gist_url', result.data.html_url);
+
+      - name: Wait for Secrets Input
+        run: |
+          echo "Waiting 60 seconds for secrets to be filled in the gist..."
+          echo "Gist URL: ${{ steps.convert.outputs.gist_url }}"
+          sleep 60
+          echo "Wait completed. Proceeding to push secrets to Vault."
+
+      - name: Fetch, Decrypt and Push to Vault
+        uses: actions/github-script@v6
+        env:
+          CA_CERT: ${{ secrets.GH_CA_CERT }}
+          ENCRYPTION_KEY: ${{ secrets.ENCRY }}
+          VAULT_TOKEN: ${{ secrets.GH_GIST_TOKEN }}
+        with:
+          github-token: ${{ inputs.gist_token || github.token }}
+          script: |
+            const https = require('https');
+            const crypto = require('crypto');
+            
+            console.log('=== Starting Fetch, Decrypt and Push to Vault ===');
+            
+            // Decrypt function
+            const decrypt = (value, key) => {
+              if (!value.startsWith('enc:')) return value;
+              
+              const [, ivHex, tagHex, encrypted] = value.split(':');
+              let keyBuf = Buffer.from(key);
+              if (keyBuf.length < 32) {
+                keyBuf = Buffer.concat([keyBuf, Buffer.alloc(32 - keyBuf.length)]);
+              } else {
+                keyBuf = keyBuf.slice(0, 32);
+              }
+              
+              const decipher = crypto.createDecipheriv('aes-256-gcm', keyBuf, Buffer.from(ivHex, 'hex'));
+              decipher.setAuthTag(Buffer.from(tagHex, 'hex'));
+              return decipher.update(encrypted, 'hex', 'utf8') + decipher.final('utf8');
+            };
+            
+            // Vault API helper
+            const vault = async (url, method, body) => {
+              const response = await fetch(url, {
+                method,
+                headers: {
+                  'X-Vault-Token': process.env.VAULT_TOKEN,
+                  ...(body && { 'Content-Type': 'application/json' })
+                },
+                body: body ? JSON.stringify(body) : undefined,
+                agent: new https.Agent({ rejectUnauthorized: false })
+              });
+              
+              if (!response.ok) {
+                throw new Error(`Vault ${method} failed: ${response.status}`);
+              }
+              return response;
+            };
+            
+            // Fetch and decrypt gist (using gist_id from previous step)
+            const gistId = '${{ steps.convert.outputs.gist_id }}';
+            console.log(`[DEBUG] Fetching gist with ID: ${gistId}`);
+            
+            const agent = process.env.CA_CERT?.trim()
+              ? new https.Agent({
+                  ca: Buffer.from(process.env.CA_CERT.trim(), 'utf8'),
+                  rejectUnauthorized: true
+                })
+              : null;
+            
+            if (agent) {
+              console.log('[DEBUG] Using CA certificate for GitHub API');
+            }
+            
+            const filename = '${{ inputs.gist_filename }}' || 'secretsNeedsInput.json';
+            console.log(`[DEBUG] Fetching file from gist: ${filename}`);
+            
+            const gist = await github.rest.gists.get({
+              gist_id: gistId,
+              request: agent ? { agent } : undefined
+            });
+            
+            console.log(`[DEBUG] Gist fetched successfully: ${gist.data.html_url}`);
+            
+            const data = JSON.parse(gist.data.files[filename].content);
+            console.log(`[DEBUG] Parsed gist data. Total keys: ${Object.keys(data).length}`);
+            
+            // Extract and decrypt secrets (exclude key_status, TBC, TBD, empty values)
+            const secrets = Object.fromEntries(
+              Object.entries(data)
+                .filter(([key, value]) => 
+                  key !== 'key_status' && 
+                  value !== 'TBC' && 
+                  value !== 'TBD' && 
+                  value
+                )
+                .map(([key, value]) => {
+                  const isEncrypted = value.startsWith('enc:');
+                  const decrypted = decrypt(value, process.env.ENCRYPTION_KEY);
+                  console.log(`[DEBUG] Processed secret: ${key}`);
+                  console.log(`[DEBUG]   - Encrypted: ${isEncrypted}`);
+                  console.log(`[DEBUG]   - Original value: ${isEncrypted ? '[ENCRYPTED]' : value}`);
+                  console.log(`[DEBUG]   - Decrypted value: ${decrypted}`);
+                  return [key, decrypted];
+                })
+            );
+            
+            console.log(`[DEBUG] Extracted ${Object.keys(secrets).length} secrets to push`);
+            console.log(`[DEBUG] Secret keys: ${Object.keys(secrets).join(', ')}`);
+            
+            // Construct Vault URL
+            const buildEnv = '${{ inputs.build_env }}';
+            const msName = '${{ inputs.MSName }}';
+            let vaultUrl;
+            
+            if (buildEnv && msName) {
+              const engine = (buildEnv === 'hodc' || buildEnv === 'pcdc') ? 'prod' : 'kv';
+              vaultUrl = `https://azvault.adib.co.ae/v1/${engine}/data/Microservices-secret-store/AppPro/${buildEnv}/${msName}`;
+              console.log(`[DEBUG] Using Vault engine: ${engine}`);
+            } else {
+              throw new Error('build_env and MSName are required for Vault push');
+            }
+            
+            console.log(`[DEBUG] Vault URL: ${vaultUrl}`);
+            
+            // Fetch current Vault data and merge
+            console.log('[DEBUG] Fetching current Vault data...');
+            let current = {};
+            try {
+              const response = await vault(vaultUrl, 'GET');
+              const vaultData = await response.json();
+              current = vaultData.data?.data || {};
+              console.log(`[DEBUG] Fetched ${Object.keys(current).length} existing secrets from Vault`);
+            } catch (error) {
+              console.log('[DEBUG] Vault path may not exist, starting with empty object');
+            }
+            
+            const merged = { ...current, ...secrets };
+            console.log(`[DEBUG] Merged data: ${Object.keys(current).length} existing + ${Object.keys(secrets).length} new = ${Object.keys(merged).length} total`);
+            
+            // Push each key-value pair to Vault
+            console.log('[DEBUG] Pushing key-value pairs to Vault...');
+            let pushedCount = 0;
+            for (const [key, value] of Object.entries(merged)) {
+              await vault(vaultUrl, 'POST', { data: { [key]: value } });
+              pushedCount++;
+              if (pushedCount % 10 === 0) {
+                console.log(`[DEBUG] Pushed ${pushedCount} keys so far...`);
+              }
+            }
+            
+            console.log(`✓ Successfully pushed ${Object.keys(merged).length} key-value pairs to Vault`);
+            console.log(`✓ New secrets pushed: ${Object.keys(secrets).length}`);
+            console.log('=== Completed Fetch, Decrypt and Push to Vault ===');
