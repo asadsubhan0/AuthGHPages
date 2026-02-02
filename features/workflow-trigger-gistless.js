@@ -102,19 +102,20 @@ export async function triggerDownstreamWorkflow(session) {
     console.log(`[WORKFLOW-TRIGGER] ✅ Successfully triggered downstream workflow for session ${session.sessionId}`);
     console.log(`[WORKFLOW-TRIGGER] Response status: ${response.status}`);
     
-    // Purge session after successful workflow trigger
-    console.log(`[WORKFLOW-TRIGGER] Purging session ${session.sessionId} after successful workflow trigger`);
-    const purged = purgeSession(session.sessionId);
-    if (purged) {
-      console.log(`[WORKFLOW-TRIGGER] ✅ Session ${session.sessionId} purged successfully`);
-    } else {
-      console.log(`[WORKFLOW-TRIGGER] ⚠️ Session ${session.sessionId} not found for purge (may have been already deleted)`);
-    }
+//     // Purge session after successful workflow trigger
+//     console.log(`[WORKFLOW-TRIGGER] Purging session ${session.sessionId} after successful workflow trigger`);
+//     const purged = purgeSession(session.sessionId);
+//     if (purged) {
+//       console.log(`[WORKFLOW-TRIGGER] ✅ Session ${session.sessionId} purged successfully`);
+//     } else {
+//       console.log(`[WORKFLOW-TRIGGER] ⚠️ Session ${session.sessionId} not found for purge (may have been already deleted)`);
+//     }
     
-    return { ok: true, status: response.status };
-  } catch (err) {
-    console.error(`[WORKFLOW-TRIGGER] ❌ Failed to trigger workflow:`, err.message);
-    throw err;
-  }
-}
+//     return { ok: true, status: response.status };
+//   } catch (err) {
+//     console.error(`[WORKFLOW-TRIGGER] ❌ Failed to trigger workflow:`, err.message);
+//     throw err;
+//   }
+// }
+
 
