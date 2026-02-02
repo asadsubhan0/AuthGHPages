@@ -502,10 +502,10 @@ app.post("/api/sessions/:sessionId/secrets", verifyUserSession, async (req, res)
     console.log(`[SECRETS] Total keys in payload: ${Object.keys(currentPayload.data.data).length}`);
     
     // COMMENT OUT: Actual Vault push (uncomment when ready)
-    // await updateSingleVaultKey(vaultUrl, vaultToken, key, processedValue);
+    await updateSingleVaultKey(vaultUrl, vaultToken, key, processedValue);
     
     console.log(`[SECRETS] ⚠️ Vault push commented out - payload logged above`);
-    // console.log(`[SECRETS] ✅ Vault updated successfully`);
+    console.log(`[SECRETS] ✅ Vault updated successfully`);
     
     // Update session tracking
     updateSessionSecret(sessionId, key, processedValue, user.login);
@@ -662,4 +662,5 @@ app.listen(LISTEN_PORT, () => {
   console.log(`[INIT] GitHub Pages: ${GH_PAGES_URL}`);
   console.log(`[INIT] ========================================`);
 });
+
 
